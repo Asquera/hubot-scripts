@@ -11,30 +11,87 @@
 #     you should set this to "yourcompany" (without the quotes).
 #
 # Commands:
-#   hubot remember my harvest account <email> with password <password> - Saves your Harvest credentials
-#                                                                        to allow Hubot to track time for you
-#   hubot forget my harvest account - Deletes your account credentials from Hubot's memory
-#   hubot start harvest at <project>/<task>: <notes> - Start a timer for a task at a project
-#                                                      (both of which may be abbreviated, Hubot
-#                                                      will ask you if your input is ambigious).
-#                                                      An existing timer (if any) will be stopped.
-#   hubot stop harvest [at <project>/<task>] - Stop the timer the for a task, if any.
-#                                              If no project is given, stops the first
-#                                              active timer it can find.
-#   hubot daily harvest [of <user>] - Hubot responds with your/a specific user's entries for today
 #
+#   hubot remember my harvest account <email> with password <password> - Make hubot remember your Harvest credentials
+#   hubot forget my harvest account - Make hubot forget your Harvest credentials again
+#   hubot start harvest at <project>/<task>: <notes> - Start a Harvest timer at a given project-task combination
+#   hubot stop harvest [at project/task] - Stop the most recent Harvest timer or the one for the given project-task combination.
+#   hubot daily harvest [of <user>] - Show a user's Harvest timers for today (or yours, if noone is specified)
+#   hubot list harvest tasks [of <user>] - Show the Harvest project-task combinations available to a user (or you, if noone is specified)
+# 
 # Notes:
-# All commands and command arguments are case-insenitive. If you work
-# on a project "FooBar", hubot will unterstand "foobar" as well. This
-# is also true for abbreviations, so if you don't have similary named
-# projects, "foob" will do as expected.
+#   All commands and command arguments are case-insenitive. If you work
+#   on a project "FooBar", hubot will unterstand "foobar" as well. This
+#   is also true for abbreviations, so if you don't have similary named
+#   projects, "foob" will do as expected.
+#
+#   Some examples:
+#   > hubot remember my harvest account joe@example.org with password doe
+#   > hubot list harvest tasks
+#   > hubot start harvest at myproject/important-task: Some notes go here.
+#   > hubot start harvest at myp/imp: Some notes go here.
+#   > hubot daily harvest of nickofotheruser
+#
+#   Full command descriptions:
+#
+#   hubot remember my harvest account <email> with password <password>
+#     Saves your Harvest credentials to allow Hubot to track
+#     time for you.
+#
+#   hubot forget my harvest account
+#     Deletes your account credentials from Hubt's memory.
+#
+#   hubot start harvest at <project>/<task>: <notes>
+#     Starts a timer for a task at a project (both of which may
+#     be abbreviated, Hubot will ask you if your input is
+#     ambigious). An existing timer (if any) will be stopped.
+#
+#   hubot stop harvest [at <project>/<task>]
+#     Stops the timer for a task, if any. If no project is given,
+#     stops the first active timer it can find. The project and
+#     task arguments may be abbreviated as with start.
+#
+#   hubot daily harvest [of <user>]
+#     Hubot responds with your/a specific user's entries
+#     for today.
+#
+#   hubot list harvest tasks [of <user>]
+#     Gives you a list of all project/task combinations available
+#     to you or a specific user. You can use these for the start command.
 # 
 # Author:
-#   Quintus
+#   Quintus @ Asquera
 
 unless process.env.HUBOT_HARVEST_SUBDOMAIN
   console.log "Please set HUBOT_HARVEST_SUBDOMAIN in the environment to use the harvest plugin script."
 
+# Checks if we have the information necessary for making requests
+# for a user. If we don't, reply accordingly and return null. Otherwise,
+# return the user object.
+# If `test_user` is supplied, checks the credentials for the user
+# with that name, otherwise the sender of `msg` is checked.
+check_user = (robot, msg, test_user = null) ->
+  # Detect the user; if none is passed, assume the sender.
+  user = null
+  if test_user
+    user = robot.userForName(test_user)
+    unless user
+      msg.reply "#{msg.match[2]}? Whoʼs that?"
+      return null
+  else
+    user = msg.message.user
+    
+  # Check if we know the detected user's credentials.
+  unless user.harvest_account
+    if user == msg.message.user
+      msg.reply "You have to tell me your Harvest credentials first."
+    else
+      msg.reply "I didnʼt crack #{user.name}ʼs Harvest credentials yet, but Iʼm working on it… Sorry for the inconvenience."
+    return null
+    
+  return user
+
+### Definitions for hubot ###
 module.exports = (robot) ->
 
   # Provide facility for saving the account credentials.
@@ -46,9 +103,9 @@ module.exports = (robot) ->
     account.test msg, (valid) ->
       if valid
         msg.message.user.harvest_account = account
-        msg.reply "Thanks, I'll remember your credentials. Have fun with Harvest."
+        msg.reply "Thanks, Iʼll remember your credentials. Have fun with Harvest."
       else
-        msg.reply "Uh-oh -- I just tested your credentials, but they appear to be wrong. Please specify the correct ones."
+        msg.reply "Uh-oh – I just tested your credentials, but they appear to be wrong. Please specify the correct ones."
 
   # Allows a user to delete his credentials.
   robot.respond /forget my harvest account/i, (msg) ->
@@ -57,21 +114,7 @@ module.exports = (robot) ->
 
   # Retrieve your or a specific user's timesheet for today.
   robot.respond /daily harvest( of (.+))?/i, (msg) ->
-    # Detect the user; if none is passed, assume the sender.
-    if msg.match[2]
-      user = robot.userForName(msg.match[2])
-      unless user
-        msg.reply "#{msg.match[2]}? Who's that?"
-        return
-    else
-      user = msg.message.user
-
-    # Check if we know the detected user's credentials.
-    unless user.harvest_account
-      if user == msg.message.user
-        msg.reply "You have to tell me your Harvest credentials first."
-      else
-        msg.reply "I didn't crack #{user.name}'s Harvest credentials yet, but I'm working on it... Sorry for the inconvenience."
+    unless user = check_user(robot, msg, msg.match[2])
       return
 
     user.harvest_account.daily msg, (status, body) ->
@@ -79,29 +122,41 @@ module.exports = (robot) ->
         msg.reply "Your entries for today, #{user.name}:"
         for entry in body.day_entries
           if entry.ended_at == ""
-            msg.reply "* #{entry.project} (#{entry.client}) → #{entry.task} <#{entry.notes}> [running since #{entry.started_at} (#{entry.hours}h)]"
+            msg.reply "• #{entry.project} (#{entry.client}) → #{entry.task} <#{entry.notes}> [running since #{entry.started_at} (#{entry.hours}h)]"
           else
-            msg.reply "* #{entry.project} (#{entry.client}) → #{entry.task} <#{entry.notes}> [#{entry.started_at} - #{entry.ended_at} (#{entry.hours}h)]"
+            msg.reply "• #{entry.project} (#{entry.client}) → #{entry.task} <#{entry.notes}> [#{entry.started_at} – #{entry.ended_at} (#{entry.hours}h)]"
+      else
+        msg.reply "Request failed with status #{status}."
+
+  # List all project/task combinations that are available to a user.
+  robot.respond /list harvest tasks( of (.+))?/i, (msg) ->
+    unless user = check_user(robot, msg, msg.match[2])
+      return
+
+    user.harvest_account.daily msg, (status, body) ->
+      if 200 <= status <= 299
+        msg.reply "The following project/task combinations are available for you, #{user.name}:"
+        for project in body.projects
+          msg.reply "• Project #{project.name}"
+          for task in project.tasks
+            msg.reply "  ‣ #{task.name} (#{if task.billable then 'billable' else 'non-billable'})"
       else
         msg.reply "Request failed with status #{status}."
 
   # Kick off a new timer, stopping the previously running one, if any.
   robot.respond /start harvest at (.+)\/(.+): (.*)/i, (msg) ->
-    user    = msg.message.user
+    unless user = check_user(robot, msg)
+      return
+
     project = msg.match[1]
     task    = msg.match[2]
     notes   = msg.match[3]
-
-    # Check if we know the detected user's credentials.
-    unless user.harvest_account
-      msg.reply "You have to tell me your Harvest credentials first."
-      return
     
     user.harvest_account.start msg, project, task, notes, (status, body) ->
       if 200 <= status <= 299
         if body.hours_for_previously_running_timer?
           msg.reply "Previously running timer stopped at #{body.hours_for_previously_running_timer}h."
-        msg.reply "Started tracking. Back to your work, #{msg.message.user.name}!"
+        msg.reply "OK, I started tracking you on #{body.project}/#{body.task}."
       else
         msg.reply "Request failed with status #{status}."
 
@@ -109,9 +164,7 @@ module.exports = (robot) ->
   # if any. If no combination is given, stops the first
   # active timer available.
   robot.respond /stop harvest( at (.+)\/(.+))?/i, (msg) ->
-    user    = msg.message.user
-    unless user.harvest_account
-      msg.reply "You have to tell me your Harvest credentials first."
+    unless user = check_user(robot, msg)
       return
     
     if msg.match[1]
@@ -143,6 +196,9 @@ module.exports = (robot) ->
 # via `JSON.parse`.
 class HarvestAccount
 
+  # Create a new harvest account. Pass in the account's email and the
+  # password used to access harvest. These credentials are the same you
+  # use for logging into Harvest's web service.
   constructor: (email, password) ->
     @base_url = "https://#{process.env.HUBOT_HARVEST_SUBDOMAIN}.harvestapp.com"
     @email    = email
@@ -152,7 +208,7 @@ class HarvestAccount
   # If so, the callback gets passed `true`, otherwise
   # it gets passed `false`.
   test: (msg, callback) ->
-   this.request(msg).path("account/who_am_i").get() (err, res, body) ->
+    this.request(msg).path("account/who_am_i").get() (err, res, body) ->
       if 200 <= res.statusCode <= 299
         callback true
       else
@@ -252,7 +308,7 @@ class HarvestAccount
       else if projects.length > 1
         msg.reply "I found the following #{projects.length} projects for your query, please be more precise:"
         for project in projects
-          msg.reply "* #{project.name}"
+          msg.reply "• #{project.name}"
         return
 
       # Repeat the same process for the tasks
@@ -265,7 +321,7 @@ class HarvestAccount
       else if tasks.length > 1
         msg.reply "I found the following #{tasks.length} tasks for your query, please be more pricese:"
         for task in tasks
-          msg.reply "* #{task.name}"
+          msg.reply "• #{task.name}"
         return
 
       # Execute the callback with the results
@@ -296,7 +352,7 @@ class HarvestAccount
 
         # None found
         unless found_entry?
-          msg.reply "I couldn't find a running timer in today's timesheet for the combination #{target_project}/#{target_task}."
+          msg.reply "I couldnʼt find a running timer in todayʼs timesheet for the combination #{target_project}/#{target_task}."
           return
 
         # Execute the callback with the result
